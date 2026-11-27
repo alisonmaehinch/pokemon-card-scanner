@@ -233,7 +233,7 @@
     return c;
   }
 
-  window.__cardScanner = { grabGuideArea, readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q) }; // for testing
+  window.__cardScanner = { grabGuideArea, readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q), matchNames: (t) => matchNames(t) }; // for testing
 
   // From a photo: center-crop to card shape.
   function cropImageToCard(img) {
@@ -438,58 +438,92 @@
     return /^\d+$/.test(a) && /^\d+$/.test(b) && parseInt(a, 10) === parseInt(b, 10);
   };
 
-  async function findCards({ name, num }) {
-    let brief = [];
-    if (name) {
-      const firstWord = name.split(/\s+/)[0].replace(/[^A-Za-zÀ-ÿ]/g, '');
-      brief = (await getJSON(`cards?name=${encodeURIComponent(name)}`)) || [];
-      if (!brief.length && firstWord.length >= 3 && firstWord !== name) brief = (await getJSON(`cards?name=${encodeURIComponent(firstWord)}`)) || [];
-      if (!brief.length && firstWord.length >= 5) {
-        // Misread letters (e.g. "Charlzard"): search by the first few letters and keep close spellings.
-        const near = (await getJSON(`cards?name=${encodeURIComponent(firstWord.slice(0, 4))}`)) || [];
-        brief = near.filter((c) => similarity(firstWord, c.name.split(/\s+/)[0]) >= 0.7);
-      }
-      if (num) {
-        const withNum = brief.filter((c) => sameNumber(c.localId, num.number));
-        // Name and number agree: great. If not, the number was probably misread,
-        // so keep the name matches (the number lookup below adds its own).
-        if (withNum.length) { brief = withNum; num.confirmedByName = true; }
-      }
+  // ---------- name matching against every real card name ----------
+  // The text reader often garbles a letter or two ("Fcharizard", "Chaiizaidva").
+  // Comparing what it read with the list of all card names fixes most of that.
+  const NAMES_KEY = 'cardNames-v1';
+  let namesPromise = null;
+  function getAllNames() {
+    if (!namesPromise) {
+      namesPromise = (async () => {
+        const cached = store.get(NAMES_KEY, null);
+        if (cached && cached.names?.length && Date.now() - cached.at < 7 * 864e5) return cached.names;
+        const all = (await getJSON('cards')) || [];
+        const names = [...new Set(all.map((c) => c.name).filter(Boolean))];
+        if (names.length) store.set(NAMES_KEY, { at: Date.now(), names });
+        return names.length ? names : (cached?.names || []);
+      })().catch((e) => { namesPromise = null; const c = store.get(NAMES_KEY, null); if (c?.names) return c.names; throw e; });
     }
-    if (num && !num.confirmedByName) {
-      // TCGdex number search matches "contains", so "54" also finds "054" and "154"; keep exact ones.
-      const n = /^\d+$/.test(num.number) ? String(parseInt(num.number, 10)) : num.number;
-      let byNum = ((await getJSON(`cards?localId=${encodeURIComponent(n)}`)) || []).filter((c) => sameNumber(c.localId, num.number));
-      if (num.total) {
-        const sets = await setsWithTotal(num.total).catch(() => new Set());
-        byNum = byNum.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
+    return namesPromise;
+  }
+  const norm = (t) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  function lev(a, b) {
+    const m = a.length, n = b.length;
+    let prev = Array.from({ length: n + 1 }, (_, j) => j), cur = new Array(n + 1);
+    for (let i = 1; i <= m; i++) {
+      cur[0] = i;
+      for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      [prev, cur] = [cur, prev];
+    }
+    return prev[n];
+  }
+  // Best matching card names for some read text, best first: [{ name, score 0..1 }]
+  async function matchNames(text) {
+    const lines = text.split('\n').map(norm).filter((l) => l.length >= 3);
+    if (!lines.length) return [];
+    const names = await getAllNames();
+    const out = [];
+    for (const name of names) {
+      const n = norm(name);
+      if (n.length < 3) continue;
+      let best = 0;
+      for (const l of lines) {
+        if (l.includes(n)) { best = 1; break; }
+        if (n.length > l.length + 2) continue;
+        for (let len = Math.max(3, n.length - 1); len <= n.length + 1; len++) {
+          for (let i = 0; i + len <= l.length; i++) {
+            const sc = 1 - lev(n, l.slice(i, i + len)) / Math.max(n.length, len);
+            if (sc > best) best = sc;
+          }
+        }
       }
-      const seen = new Set(brief.map((c) => c.id));
-      brief = brief.concat(byNum.filter((c) => !seen.has(c.id)));
+      // Longer names that match well are more telling than short ones.
+      if (best >= 0.7) out.push({ name, score: best, len: n.length });
     }
-    if (!brief.length) return [];
-    // Keep only cards from sets whose printed size matches the "/91" part, when we have it.
-    if (num?.total && num.confirmedByName) {
-      const sets = await setsWithTotal(num.total);
-      const inSet = brief.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
-      if (inSet.length) brief = inSet;
-    }
-    // Rank by name (then newest set first) before fetching details for the best few.
-    const order = await setOrder();
+    out.sort((x, y) => (y.score - x.score) || (y.len - x.len));
+    return out.slice(0, 4);
+  }
+
+  // names: [{name, score}] from matchNames. typed: a name typed in the search box (partial is fine).
+  async function findCards({ names = [], typed = '', num = null }) {
+    const sets = await allSets().catch(() => []);
+    const setTotal = new Map(sets.map((x) => [x.id, x.cardCount?.official]));
+    const order = new Map(sets.map((x, i) => [x.id, i]));
     const setOf = (c) => c.id.slice(0, c.id.lastIndexOf('-'));
-    brief.forEach((c) => { c._s = (name ? similarity(name, c.name) : 0) + (order.get(setOf(c)) ?? 0) / 100000; });
-    brief.sort((a, b) => b._s - a._s);
-    const top = brief.slice(0, 24);
-    const details = (await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null))))
-      .filter(Boolean).map(normalize);
-    let list = details;
-    list.forEach((c) => {
-      c._score = (name ? 1.5 * similarity(name, c.name) : 0)
-        + (num && sameNumber(c.number, num.number) ? 1 : 0)
-        + (num?.total && Number(c.set.printedTotal) === num.total ? 0.5 : 0);
+    const nameScore = new Map(names.map((n) => [n.name, n.score]));
+    const lists = [];
+    for (const n of names.slice(0, 3)) lists.push(getJSON(`cards?name=eq:${encodeURIComponent(n.name)}`));
+    if (typed) lists.push(getJSON(`cards?name=${encodeURIComponent(typed)}`));
+    if (num) {
+      const n = /^\d+$/.test(num.number) ? String(parseInt(num.number, 10)) : num.number;
+      lists.push(getJSON(`cards?localId=${encodeURIComponent(n)}`).then((l) => (l || []).filter((c) => sameNumber(c.localId, num.number))));
+    }
+    const seen = new Map();
+    (await Promise.all(lists)).forEach((l) => (l || []).forEach((c) => seen.set(c.id, c)));
+    let brief = [...seen.values()];
+    if (!brief.length) return [];
+    // Score each card: how well the name fits, whether the number fits, whether the set size fits.
+    brief.forEach((c) => {
+      const ns = nameScore.get(c.name) ?? (typed ? similarity(typed, c.name) : 0);
+      const numOk = num && sameNumber(c.localId, num.number);
+      const totOk = num?.total && setTotal.get(setOf(c)) === num.total;
+      c._score = 2 * ns + (numOk ? 1 : 0) + (totOk ? 0.5 : 0) + (order.get(setOf(c)) ?? 0) / 100000;
+      c._name = ns; c._num = !!numOk;
     });
-    list.sort((a, b) => b._score - a._score);
-    return list.slice(0, 16);
+    brief.sort((a, b) => b._score - a._score);
+    const top = brief.slice(0, 16);
+    const details = await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null)));
+    return details.map((d, i) => d && Object.assign(normalize(d), { _score: top[i]._score, _name: top[i]._name, _num: top[i]._num })).filter(Boolean);
   }
 
   // ---------- prices ----------
@@ -525,16 +559,18 @@
     try {
       setStatus('Reading the card…');
       const { nameText, numText } = await readCard(card);
-      const name = parseName(nameText);
       const num = parseNumber(numText);
+      setStatus('Matching the name…');
+      const names = await matchNames(nameText);
+      const name = names[0]?.name || '';
       if (!name && !num) {
         setStatus('I could not read that card. Try again with less glare, or type the name below.', true, 6000);
         return;
       }
       els.readText.textContent = `Read: ${[name, num && (num.total ? `${num.number}/${num.total}` : num.number)].filter(Boolean).join(' · ')}`;
       setStatus('Looking it up…');
-      const cards = await findCards({ name, num });
-      const sure = confidentMatch(cards, num, name);
+      const cards = await findCards({ names, num });
+      const sure = confidentMatch(cards);
       if (sure && settings().autoAdd) await autoAdd(sure);
       else showResults(cards);
     } catch (e) {
@@ -547,13 +583,13 @@
 
   // A scan is "sure" when only one card fits, or the best one clearly beats the rest
   // and its number matched what was printed on the card.
-  function confidentMatch(cards, num, name) {
-    if (!cards.length || !num) return null;
+  function confidentMatch(cards) {
+    if (!cards.length) return null;
     const [a, b] = cards;
-    if (!sameNumber(a.number, num.number)) return null;
-    if (name && similarity(name, a.name) < 0.6) return null; // name and number disagree
-    if (cards.length === 1) return a;
-    return a._score >= 2 && b._score < a._score - 0.3 ? a : null;
+    // Sure = the name was read well AND the number matched, and nothing else comes close.
+    if (!a._num || a._name < 0.85) return null;
+    if (b && b._score > a._score - 0.4) return null;
+    return a;
   }
 
   function defaultVariant(card) {
@@ -608,7 +644,8 @@
     try {
       setStatus('Looking it up…');
       els.readText.textContent = `Search: ${[name, numRaw].filter(Boolean).join(' · ')}`;
-      showResults(await findCards({ name, num }));
+      const names = name ? await matchNames(name) : [];
+      showResults(await findCards({ names, typed: name, num }));
     } catch (err) {
       setStatus(err.message, true);
     }
@@ -833,4 +870,5 @@
   startCamera();
   // Warm up the text reader in the background so the first scan is quicker.
   setTimeout(() => getWorker().catch(() => {}), 1500);
+  setTimeout(() => getAllNames().catch(() => {}), 2500);
 })();
