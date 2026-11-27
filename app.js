@@ -467,31 +467,41 @@
     }
     return prev[n];
   }
-  // Best matching card names for some read text, best first: [{ name, score 0..1 }]
-  async function matchNames(text) {
-    const lines = text.split('\n').map(norm).filter((l) => l.length >= 3);
-    if (!lines.length) return [];
-    const names = await getAllNames();
-    const out = [];
-    for (const name of names) {
-      const n = norm(name);
-      if (n.length < 3) continue;
-      let best = 0;
-      for (const l of lines) {
-        if (l.includes(n)) { best = 1; break; }
-        if (n.length > l.length + 2) continue;
-        for (let len = Math.max(3, n.length - 1); len <= n.length + 1; len++) {
-          for (let i = 0; i + len <= l.length; i++) {
-            const sc = 1 - lev(n, l.slice(i, i + len)) / Math.max(n.length, len);
-            if (sc > best) best = sc;
-          }
+  const readLines = (text) => text.split('\n').map(norm).filter((l) => l.length >= 3);
+  // How well a (normalized) card name appears somewhere in the read lines, 0..1.
+  function nameFit(n, lines) {
+    if (n.length < 3) return 0;
+    let best = 0;
+    for (const l of lines) {
+      if (l.includes(n)) return 1;
+      if (n.length > l.length + 2) continue;
+      for (let len = Math.max(3, n.length - 1); len <= n.length + 1; len++) {
+        for (let i = 0; i + len <= l.length; i++) {
+          const sc = 1 - lev(n, l.slice(i, i + len)) / Math.max(n.length, len);
+          if (sc > best) best = sc;
         }
       }
-      // Longer names that match well are more telling than short ones.
-      if (best >= 0.7) out.push({ name, score: best, len: n.length });
+    }
+    return best;
+  }
+  // Best matching card names for some read text, best first: [{ name, score 0..1 }].
+  // Names that look the same once symbols are dropped (e.g. "Charizard δ") are kept together.
+  async function matchNames(text) {
+    const lines = readLines(text);
+    if (!lines.length) return [];
+    const groups = new Map();
+    for (const name of await getAllNames()) {
+      const n = norm(name);
+      if (!groups.has(n)) groups.set(n, []);
+      groups.get(n).push(name);
+    }
+    const out = [];
+    for (const [n, list] of groups) {
+      const score = nameFit(n, lines);
+      if (score >= 0.7) out.push({ names: list, name: list[0], score, len: n.length });
     }
     out.sort((x, y) => (y.score - x.score) || (y.len - x.len));
-    return out.slice(0, 4);
+    return out.slice(0, 3).map((o) => ({ ...o, lines }));
   }
 
   // names: [{name, score}] from matchNames. typed: a name typed in the search box (partial is fine).
@@ -500,9 +510,9 @@
     const setTotal = new Map(sets.map((x) => [x.id, x.cardCount?.official]));
     const order = new Map(sets.map((x, i) => [x.id, i]));
     const setOf = (c) => c.id.slice(0, c.id.lastIndexOf('-'));
-    const nameScore = new Map(names.map((n) => [n.name, n.score]));
+    const lines = names[0]?.lines || [];
     const lists = [];
-    for (const n of names.slice(0, 3)) lists.push(getJSON(`cards?name=eq:${encodeURIComponent(n.name)}`));
+    for (const g of names.slice(0, 3)) for (const nm of g.names || [g.name]) lists.push(getJSON(`cards?name=eq:${encodeURIComponent(nm)}`));
     if (typed) lists.push(getJSON(`cards?name=${encodeURIComponent(typed)}`));
     if (num) {
       const n = /^\d+$/.test(num.number) ? String(parseInt(num.number, 10)) : num.number;
@@ -514,7 +524,7 @@
     if (!brief.length) return [];
     // Score each card: how well the name fits, whether the number fits, whether the set size fits.
     brief.forEach((c) => {
-      const ns = nameScore.get(c.name) ?? (typed ? similarity(typed, c.name) : 0);
+      const ns = lines.length ? nameFit(norm(c.name), lines) : (typed ? similarity(typed, c.name) : 0);
       const numOk = num && sameNumber(c.localId, num.number);
       const totOk = num?.total && setTotal.get(setOf(c)) === num.total;
       c._score = 2 * ns + (numOk ? 1 : 0) + (totOk ? 0.5 : 0) + (order.get(setOf(c)) ?? 0) / 100000;
