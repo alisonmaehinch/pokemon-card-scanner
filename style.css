@@ -147,3 +147,5 @@ label.check input { width: 22px; height: 22px; margin: 0; flex: none; }
 .read-row { display: flex; gap: 10px; align-items: center; }
 .read-row p { margin: 6px 0; }
 #scan-thumb { width: 54px; border-radius: 6px; border: 1px solid #36405a; flex: none; }
+.note { margin: 8px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 15px; background: #3a2f12; color: #ffe7a3; }
+.note .link { font-size: inherit; padding: 0; text-decoration: underline; }
