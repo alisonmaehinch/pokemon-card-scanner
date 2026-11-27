@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Card Scanner</title>
+  <meta name="theme-color" content="#1d2433">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Card Scanner">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Card Scanner</h1>
+    <nav class="tabs">
+      <button data-tab="scan" class="active">Scan</button>
+      <button data-tab="inventory">Inventory</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </header>
+
+  <!-- SCAN -->
+  <main id="tab-scan" class="tab active">
+    <section id="camera-step">
+      <div class="camera-wrap">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="guide"><span>Line the card up inside the frame</span></div>
+        <div id="camera-off" class="camera-off hidden">
+          <p>Camera is off.</p>
+          <button id="start-camera" class="primary">Turn on camera</button>
+        </div>
+      </div>
+      <div class="row">
+        <button id="snap" class="primary big">Scan card</button>
+      </div>
+      <div class="row small-gap">
+        <label class="secondary file-btn">Use a photo
+          <input id="file-input" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+      </div>
+      <form id="search-form" class="search">
+        <input id="search-name" placeholder="Or type a name, e.g. Charizard" autocomplete="off">
+        <input id="search-number" placeholder="No. e.g. 4/102" inputmode="text" autocomplete="off">
+        <button class="secondary" type="submit">Search</button>
+      </form>
+    </section>
+
+    <section id="status" class="status hidden"></section>
+
+    <section id="results-step" class="hidden">
+      <div class="results-head">
+        <h2>Which card is it?</h2>
+        <button id="back-to-camera" class="link">Rescan</button>
+      </div>
+      <p id="read-text" class="muted"></p>
+      <div id="results" class="grid"></div>
+    </section>
+
+    <section id="confirm-step" class="hidden">
+      <div class="confirm">
+        <img id="c-img" alt="">
+        <div class="confirm-info">
+          <h2 id="c-name"></h2>
+          <p id="c-set" class="muted"></p>
+          <p id="c-rarity" class="muted"></p>
+          <label>Version
+            <select id="c-variant"></select>
+          </label>
+          <p class="price" id="c-price"></p>
+          <p class="muted small" id="c-price-eu"></p>
+          <div class="two">
+            <label>Condition
+              <select id="c-condition">
+                <option>Near Mint</option>
+                <option>Lightly Played</option>
+                <option>Moderately Played</option>
+                <option>Heavily Played</option>
+                <option>Damaged</option>
+              </select>
+            </label>
+            <label>Quantity
+              <input id="c-qty" type="number" min="1" value="1" inputmode="numeric">
+            </label>
+          </div>
+          <label>Notes
+            <input id="c-notes" placeholder="Optional, e.g. binder 2">
+          </label>
+        </div>
+      </div>
+      <div class="row">
+        <button id="save" class="primary big">Add to inventory</button>
+      </div>
+      <div class="row">
+        <button id="cancel-confirm" class="link">Back to results</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- INVENTORY -->
+  <main id="tab-inventory" class="tab">
+    <div class="inv-head">
+      <div>
+        <h2>On this phone</h2>
+        <p class="muted small" id="inv-summary"></p>
+      </div>
+      <div class="inv-actions">
+        <button id="export-csv" class="secondary">Export CSV</button>
+        <button id="open-sheet" class="secondary">Open Sheet</button>
+      </div>
+    </div>
+    <p class="muted small">Every scan is kept here as a backup. Cards marked "not synced" will be sent to your Google Sheet when you tap Retry.</p>
+    <button id="retry-sync" class="secondary hidden">Retry unsynced</button>
+    <ul id="inv-list" class="inv-list"></ul>
+  </main>
+
+  <!-- SETTINGS -->
+  <main id="tab-settings" class="tab">
+    <h2>Settings</h2>
+    <label>Google Sheet link (Apps Script web app URL)
+      <input id="set-sheet-url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    </label>
+    <label>Google Sheet address (optional, for the Open Sheet button)
+      <input id="set-sheet-view" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
+    </label>
+    <label>Pokémon TCG API key (optional)
+      <input id="set-api-key" placeholder="Leave blank to use the free limit" autocomplete="off">
+    </label>
+    <div class="row">
+      <button id="save-settings" class="primary">Save</button>
+      <button id="test-sheet" class="secondary">Test Sheet connection</button>
+    </div>
+    <p id="settings-msg" class="muted"></p>
+    <p class="muted small">Prices come from TCGplayer (USD) and Cardmarket (EUR) via the free Pokémon TCG API. Prices are updated daily on their side.</p>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <canvas id="canvas" hidden></canvas>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
