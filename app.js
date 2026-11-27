@@ -233,6 +233,7 @@
     return c;
   }
 
+  // Handles for checking the scanner on sample images.
   window.__cardScanner = { grabGuideArea, readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q), matchNames: (t) => matchNames(t) }; // for testing
 
   // From a photo: center-crop to card shape.
@@ -343,6 +344,7 @@
       [0.4, 0.86, 1.0, 0.975, 'bin'],    // bottom-right (older cards)
       [0.65, 0.88, 1.0, 0.97, 'gray'],
       [0.0, 0.93, 0.30, 0.98, 'gray'],
+      [0.0, 0.86, 1.0, 0.985, 'gray'],   // whole bottom strip (Base Set era)
     ]) {
       const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1600, mode))).data.text || '';
       if (parseNumber(t)) { numText = t; break; }
