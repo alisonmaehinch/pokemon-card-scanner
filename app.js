@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const API = 'https://api.pokemontcg.io/v2/cards';
+  const API = 'https://api.tcgdex.net/v2/en';
   const CARD_RATIO = 63 / 88; // width / height of a trading card
   const GUIDE_WIDTH = 0.72;   // must match .guide width in style.css
 
@@ -19,7 +19,7 @@
     save: $('save'), cancelConfirm: $('cancel-confirm'), backToCamera: $('back-to-camera'),
     invList: $('inv-list'), invSummary: $('inv-summary'), exportCsv: $('export-csv'),
     openSheet: $('open-sheet'), retrySync: $('retry-sync'),
-    setSheetUrl: $('set-sheet-url'), setSheetView: $('set-sheet-view'), setApiKey: $('set-api-key'),
+    setSheetUrl: $('set-sheet-url'), setSheetView: $('set-sheet-view'),
     saveSettings: $('save-settings'), testSheet: $('test-sheet'), settingsMsg: $('settings-msg'),
     toast: $('toast'),
   };
@@ -34,7 +34,7 @@
       try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
     },
   };
-  const settings = () => store.get('settings', { sheetUrl: '', sheetView: '', apiKey: '' });
+  const settings = () => store.get('settings', { sheetUrl: '', sheetView: '' });
   const inventory = () => store.get('inventory', []);
   const saveInventory = (list) => store.set('inventory', list);
 
@@ -50,6 +50,7 @@
     if (!msg) { els.status.classList.add('hidden'); return; }
     els.status.textContent = msg;
     els.status.className = `status${isErr ? ' err' : ''}`;
+    els.status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
   function showStep(step) {
     els.cameraStep.classList.toggle('hidden', step !== 'camera');
@@ -169,7 +170,12 @@
   function getWorker() {
     if (!workerPromise) {
       if (!window.Tesseract) return Promise.reject(new Error('Text reader did not load. Check your internet connection.'));
-      workerPromise = Tesseract.createWorker('eng');
+      workerPromise = Tesseract.createWorker('eng', 1, {
+        logger: (m) => {
+          if (busy && m.status && /loading|initializ/i.test(m.status)) setStatus('Getting the text reader ready (first scan only, about 10 seconds)…');
+        },
+      });
+      workerPromise.catch(() => { workerPromise = null; });
     }
     return workerPromise;
   }
@@ -212,20 +218,36 @@
     return null;
   }
 
-  // ---------- API ----------
-  async function apiSearch(q) {
-    const params = new URLSearchParams({
-      q, pageSize: '24', orderBy: '-set.releaseDate',
-      select: 'id,name,number,rarity,set,images,tcgplayer,cardmarket',
-    });
-    const headers = {};
-    const key = settings().apiKey;
-    if (key) headers['X-Api-Key'] = key;
-    const res = await fetch(`${API}?${params}`, { headers });
-    if (!res.ok) throw new Error(res.status === 429 ? 'Too many lookups right now. Wait a minute or add a free API key in Settings.' : `Card lookup failed (${res.status}).`);
-    return (await res.json()).data || [];
+  // ---------- API (TCGdex: free, no key) ----------
+  async function getJSON(path) {
+    let res;
+    try { res = await fetch(`${API}/${path}`); }
+    catch { throw new Error('Could not reach the card database. Check your internet connection and try again.'); }
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`The card database had a problem (${res.status}). Try again in a minute.`);
+    return res.json();
   }
-  const quote = (s) => `"${s.replace(/"/g, '')}"`;
+
+  // Turn a TCGdex card into the shape the rest of the app uses.
+  function normalize(d) {
+    const tp = d.pricing?.tcgplayer || {};
+    const prices = {};
+    Object.entries(tp).forEach(([k, v]) => {
+      if (v && typeof v === 'object') prices[k] = { market: v.marketPrice ?? v.midPrice ?? null, productId: v.productId };
+    });
+    const productId = Object.values(prices).find((p) => p.productId)?.productId;
+    const cm = d.pricing?.cardmarket;
+    return {
+      id: d.id,
+      name: d.name,
+      number: d.localId,
+      rarity: d.rarity || '',
+      set: { id: d.set?.id || '', name: d.set?.name || '', printedTotal: d.set?.cardCount?.official ?? '' },
+      images: d.image ? { small: `${d.image}/low.webp`, large: `${d.image}/high.webp` } : {},
+      tcgplayer: { url: productId ? `https://www.tcgplayer.com/product/${productId}` : '', prices },
+      cardmarket: cm ? { prices: { trendPrice: cm.trend ?? cm.avg ?? null, reverseHoloTrend: cm['trend-holo'] || null } } : null,
+    };
+  }
 
   function similarity(a, b) {
     a = a.toLowerCase().replace(/[^a-z0-9]/g, ''); b = b.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -236,56 +258,66 @@
       dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
     return 1 - dp[a.length][b.length] / Math.max(a.length, b.length);
   }
+  const sameNumber = (localId, n) => {
+    const a = String(localId).toUpperCase(), b = String(n).toUpperCase();
+    if (a === b) return true;
+    return /^\d+$/.test(a) && /^\d+$/.test(b) && parseInt(a, 10) === parseInt(b, 10);
+  };
 
   async function findCards({ name, num }) {
-    const seen = new Map();
-    const add = (cards) => cards.forEach((c) => seen.set(c.id, c));
-    if (num) {
-      const parts = [`number:${num.number}`];
-      if (num.total) parts.push(`set.printedTotal:${num.total}`);
-      add(await apiSearch(parts.join(' ')));
+    let brief = [];
+    if (name) {
+      const firstWord = name.split(/\s+/)[0].replace(/[^A-Za-zÀ-ÿ]/g, '');
+      brief = (await getJSON(`cards?name=${encodeURIComponent(name)}`)) || [];
+      if (!brief.length && firstWord.length >= 3 && firstWord !== name) brief = (await getJSON(`cards?name=${encodeURIComponent(firstWord)}`)) || [];
+      if (num) {
+        const withNum = brief.filter((c) => sameNumber(c.localId, num.number));
+        if (withNum.length) brief = withNum;
+        else brief = []; // name was probably misread; fall back to the number
+      }
     }
-    if (name && (seen.size === 0 || seen.size > 6)) {
-      const words = name.split(/\s+/);
-      let byName = await apiSearch(`name:${quote(name)}${num ? ` number:${num.number}` : ''}`);
-      if (!byName.length && num) byName = await apiSearch(`name:${quote(name)}`);
-      if (!byName.length && words[0].length >= 3) byName = await apiSearch(`name:${words[0].replace(/[^A-Za-z]/g, '')}*`);
-      if (seen.size > 6 && byName.length) {
-        // number gave too many hits; keep only those that match the name too
-        const ids = new Set(byName.map((c) => c.id));
-        const both = [...seen.values()].filter((c) => ids.has(c.id));
-        if (both.length) { seen.clear(); add(both); } else add(byName);
-      } else add(byName);
+    if (!brief.length && num) {
+      const n = num.number;
+      const forms = /^\d+$/.test(n) ? [...new Set([n, n.padStart(2, '0'), n.padStart(3, '0')])] : [n];
+      const lists = await Promise.all(forms.map((f) => getJSON(`cards?localId=eq:${encodeURIComponent(f)}`)));
+      brief = lists.flat().filter(Boolean);
     }
-    const list = [...seen.values()];
-    list.forEach((c) => {
-      c._score = (name ? similarity(name, c.name) : 0)
-        + (num && c.number.toLowerCase() === num.number.toLowerCase() ? 1 : 0)
-        + (num && num.total && c.set.printedTotal === num.total ? 0.5 : 0);
-    });
+    if (!brief.length) return [];
+    // Rank by name before fetching details, then fetch details for the best few.
+    brief.forEach((c) => { c._s = name ? similarity(name, c.name) : 0; });
+    brief.sort((a, b) => b._s - a._s);
+    const top = brief.slice(0, num && !name ? 40 : 16);
+    const details = (await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null))))
+      .filter(Boolean).map(normalize);
+    let list = details;
+    if (num?.total) {
+      const sameSet = list.filter((c) => Number(c.set.printedTotal) === num.total);
+      if (sameSet.length) list = sameSet;
+    }
+    list.forEach((c) => { c._score = (name ? similarity(name, c.name) : 0) + (num && sameNumber(c.number, num.number) ? 1 : 0); });
     list.sort((a, b) => b._score - a._score);
-    return list.slice(0, 24);
+    return list.slice(0, 16);
   }
 
   // ---------- prices ----------
   const VARIANT_LABELS = {
-    normal: 'Normal', holofoil: 'Holofoil', reverseHolofoil: 'Reverse Holo',
-    '1stEditionHolofoil': '1st Edition Holo', '1stEditionNormal': '1st Edition',
-    unlimitedHolofoil: 'Unlimited Holo', unlimited: 'Unlimited',
+    normal: 'Normal', holofoil: 'Holofoil', reverseHolofoil: 'Reverse Holo', 'reverse-holofoil': 'Reverse Holo',
+    '1stEditionHolofoil': '1st Edition Holo', '1st-edition-holofoil': '1st Edition Holo',
+    '1stEditionNormal': '1st Edition', '1st-edition-normal': '1st Edition',
+    unlimitedHolofoil: 'Unlimited Holo', 'unlimited-holofoil': 'Unlimited Holo',
   };
+  const prettify = (k) => k.replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
   function variantsOf(card) {
     const prices = card.tcgplayer?.prices || {};
-    const list = Object.entries(prices).map(([key, p]) => ({
-      key, label: VARIANT_LABELS[key] || key, usd: p.market ?? p.mid ?? null,
-    }));
+    const list = Object.entries(prices).map(([key, p]) => ({ key, label: VARIANT_LABELS[key] || prettify(key), usd: p.market ?? null }));
     if (!list.length) list.push({ key: 'default', label: 'Standard', usd: null });
     return list;
   }
   function eurOf(card, variantKey) {
     const p = card.cardmarket?.prices;
     if (!p) return null;
-    if (variantKey === 'reverseHolofoil' && p.reverseHoloTrend) return p.reverseHoloTrend;
-    return p.trendPrice ?? p.averageSellPrice ?? null;
+    if (/reverse/i.test(variantKey || '') && p.reverseHoloTrend) return p.reverseHoloTrend;
+    return p.trendPrice ?? null;
   }
   const bestPrice = (card) => {
     const vs = variantsOf(card).filter((v) => v.usd != null);
@@ -296,7 +328,7 @@
   let busy = false;
   async function runScan(card) {
     if (busy) return;
-    busy = true; els.snap.disabled = true;
+    busy = true; els.snap.disabled = true; els.snap.textContent = 'Reading…';
     try {
       setStatus('Reading the card…');
       const { nameText, numText } = await readCard(card);
@@ -314,13 +346,22 @@
       console.error(e);
       setStatus(e.message || 'Something went wrong.', true);
     } finally {
-      busy = false; els.snap.disabled = false;
+      busy = false; els.snap.disabled = false; els.snap.textContent = 'Scan card';
     }
   }
 
-  els.snap.addEventListener('click', () => {
+  els.snap.addEventListener('click', async () => {
+    if (!stream) {
+      await startCamera();
+      if (!stream) {
+        setStatus('The camera is blocked. On iPhone: Settings > Safari > Camera > Allow, then reopen the app. Or tap "Use a photo".', true);
+        return;
+      }
+      setStatus('Camera is on. Line up the card and tap Scan card again.');
+      return;
+    }
     const card = grabGuideArea();
-    if (!card) { setStatus('Camera is not ready yet. Turn it on, or use a photo.', true); return; }
+    if (!card) { setStatus('Camera is still starting. Try again in a second.', true); return; }
     runScan(card);
   });
 
@@ -518,14 +559,13 @@
   // ---------- settings ----------
   function loadSettingsForm() {
     const s = settings();
-    els.setSheetUrl.value = s.sheetUrl; els.setSheetView.value = s.sheetView; els.setApiKey.value = s.apiKey;
+    els.setSheetUrl.value = s.sheetUrl || ''; els.setSheetView.value = s.sheetView || '';
     els.settingsMsg.textContent = '';
   }
   els.saveSettings.addEventListener('click', () => {
     store.set('settings', {
       sheetUrl: els.setSheetUrl.value.trim(),
       sheetView: els.setSheetView.value.trim(),
-      apiKey: els.setApiKey.value.trim(),
     });
     els.settingsMsg.textContent = 'Saved.';
   });

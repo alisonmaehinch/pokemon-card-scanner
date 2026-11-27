@@ -2,8 +2,8 @@
 
 A free iPhone web app that scans Pokémon cards with the camera, looks them up, and logs card details and market prices into a Google Sheet.
 
-- **Recognition:** reads the card name and collector number (e.g. `4/102`) on the phone with [Tesseract.js](https://github.com/naptha/tesseract.js), then finds the card in the free [Pokémon TCG API](https://pokemontcg.io). You tap the right match.
-- **Prices:** TCGplayer market price (USD) and Cardmarket trend (EUR), from the same API.
+- **Recognition:** reads the card name and collector number (e.g. `4/102`) on the phone with [Tesseract.js](https://github.com/naptha/tesseract.js), then finds the card in the free [TCGdex](https://tcgdex.dev) card database (no account or key needed). You tap the right match.
+- **Prices:** TCGplayer market price (USD) and Cardmarket trend (EUR), from TCGdex, updated daily.
 - **Storage:** your own Google Sheet, through a small Apps Script. Every scan is also kept on the phone as a backup, with CSV export.
 
 ## Setup (about 10 minutes, once)
@@ -35,9 +35,6 @@ Open the Sheet and use the **Card Scanner** menu:
 - **Refresh prices every day** sets this up to run each morning automatically.
 
 Scanning the same card, version and condition again raises the quantity instead of adding a new row.
-
-## Optional: API key
-The app works without a key at a lower daily limit. For heavy scanning, get a free key at [dev.pokemontcg.io](https://dev.pokemontcg.io) and paste it in Settings (and in `API_KEY` at the top of the Apps Script for price refreshes).
 
 ## Files
 - `index.html`, `style.css`, `app.js`: the app (no build step)

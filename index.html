@@ -25,6 +25,7 @@
 
   <!-- SCAN -->
   <main id="tab-scan" class="tab active">
+    <section id="status" class="status hidden"></section>
     <section id="camera-step">
       <div class="camera-wrap">
         <video id="video" playsinline muted autoplay></video>
@@ -48,8 +49,6 @@
         <button class="secondary" type="submit">Search</button>
       </form>
     </section>
-
-    <section id="status" class="status hidden"></section>
 
     <section id="results-step" class="hidden">
       <div class="results-head">
@@ -126,15 +125,12 @@
     <label>Google Sheet address (optional, for the Open Sheet button)
       <input id="set-sheet-view" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
     </label>
-    <label>Pokémon TCG API key (optional)
-      <input id="set-api-key" placeholder="Leave blank to use the free limit" autocomplete="off">
-    </label>
     <div class="row">
       <button id="save-settings" class="primary">Save</button>
       <button id="test-sheet" class="secondary">Test Sheet connection</button>
     </div>
     <p id="settings-msg" class="muted"></p>
-    <p class="muted small">Prices come from TCGplayer (USD) and Cardmarket (EUR) via the free Pokémon TCG API. Prices are updated daily on their side.</p>
+    <p class="muted small">Prices come from TCGplayer (USD) and Cardmarket (EUR) via the free TCGdex card database. No account or key is needed. Prices are updated daily on their side.</p>
   </main>
 
   <div id="toast" class="toast hidden"></div>

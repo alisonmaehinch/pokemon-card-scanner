@@ -128,9 +128,6 @@ function onOpen() {
     .addToUi();
 }
 
-/** Optional: put your free pokemontcg.io key here for higher limits. */
-const API_KEY = '';
-
 function refreshPrices() {
   const sh = getSheet_();
   const last = sh.getLastRow();
@@ -138,25 +135,24 @@ function refreshPrices() {
   const data = sh.getRange(2, 1, last - 1, HEADERS.length).getValues();
   const ids = [...new Set(data.map((r) => r[COL['Card ID'] - 1]).filter(String))];
   const cards = {};
-  const headers = API_KEY ? { 'X-Api-Key': API_KEY } : {};
-  for (let i = 0; i < ids.length; i += 50) {
-    const chunk = ids.slice(i, i + 50);
-    const q = '(' + chunk.map((id) => 'id:"' + id + '"').join(' OR ') + ')';
-    const url = 'https://api.pokemontcg.io/v2/cards?pageSize=50&select=id,tcgplayer,cardmarket&q=' + encodeURIComponent(q);
-    const res = UrlFetchApp.fetch(url, { headers: headers, muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) continue;
-    JSON.parse(res.getContentText()).data.forEach((c) => (cards[c.id] = c));
-    Utilities.sleep(300);
+  // TCGdex: free, no key. Fetch in batches of 20.
+  for (let i = 0; i < ids.length; i += 20) {
+    const reqs = ids.slice(i, i + 20).map((id) => ({
+      url: 'https://api.tcgdex.net/v2/en/cards/' + encodeURIComponent(id), muteHttpExceptions: true,
+    }));
+    UrlFetchApp.fetchAll(reqs).forEach((res, j) => {
+      if (res.getResponseCode() === 200) cards[ids[i + j]] = JSON.parse(res.getContentText());
+    });
   }
   const now = new Date();
   data.forEach((row, i) => {
     const c = cards[row[COL['Card ID'] - 1]];
-    if (!c) return;
-    const key = row[COL['Version key'] - 1];
-    const p = c.tcgplayer && c.tcgplayer.prices && c.tcgplayer.prices[key];
-    const usd = p ? (p.market != null ? p.market : p.mid) : null;
-    const cm = c.cardmarket && c.cardmarket.prices;
-    const eur = cm ? ((key === 'reverseHolofoil' && cm.reverseHoloTrend) || cm.trendPrice || cm.averageSellPrice || null) : null;
+    if (!c || !c.pricing) return;
+    const key = String(row[COL['Version key'] - 1]);
+    const tp = c.pricing.tcgplayer && c.pricing.tcgplayer[key];
+    const usd = tp ? (tp.marketPrice != null ? tp.marketPrice : tp.midPrice) : null;
+    const cm = c.pricing.cardmarket;
+    const eur = cm ? ((/reverse/i.test(key) && cm['trend-holo']) || cm.trend || cm.avg || null) : null;
     const r = i + 2;
     if (usd != null) sh.getRange(r, COL['Market price (USD)']).setValue(usd);
     if (eur != null) sh.getRange(r, COL['Cardmarket trend (EUR)']).setValue(eur);
