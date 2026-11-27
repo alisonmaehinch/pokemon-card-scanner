@@ -249,6 +249,13 @@
     };
   }
 
+  let setsPromise = null;
+  async function setsWithTotal(total) {
+    if (!setsPromise) setsPromise = getJSON('sets').catch((e) => { setsPromise = null; throw e; });
+    const sets = (await setsPromise) || [];
+    return new Set(sets.filter((x) => x.cardCount?.official === total).map((x) => x.id));
+  }
+
   function similarity(a, b) {
     a = a.toLowerCase().replace(/[^a-z0-9]/g, ''); b = b.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (!a || !b) return 0;
@@ -283,6 +290,12 @@
       brief = lists.flat().filter(Boolean);
     }
     if (!brief.length) return [];
+    // Keep only cards from sets whose printed size matches the "/91" part, when we have it.
+    if (num?.total) {
+      const sets = await setsWithTotal(num.total);
+      const inSet = brief.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
+      if (inSet.length) brief = inSet;
+    }
     // Rank by name before fetching details, then fetch details for the best few.
     brief.forEach((c) => { c._s = name ? similarity(name, c.name) : 0; });
     brief.sort((a, b) => b._s - a._s);
