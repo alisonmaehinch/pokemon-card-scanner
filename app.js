@@ -19,7 +19,7 @@
     save: $('save'), cancelConfirm: $('cancel-confirm'), backToCamera: $('back-to-camera'),
     invList: $('inv-list'), invSummary: $('inv-summary'), exportCsv: $('export-csv'),
     openSheet: $('open-sheet'), retrySync: $('retry-sync'),
-    setSheetUrl: $('set-sheet-url'), setSheetView: $('set-sheet-view'),
+    setSheetUrl: $('set-sheet-url'), setSheetView: $('set-sheet-view'), setAutoAdd: $('set-auto-add'), setCondition: $('set-condition'),
     saveSettings: $('save-settings'), testSheet: $('test-sheet'), settingsMsg: $('settings-msg'),
     toast: $('toast'),
   };
@@ -34,17 +34,24 @@
       try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
     },
   };
-  const settings = () => store.get('settings', { sheetUrl: '', sheetView: '' });
+  const settings = () => ({ sheetUrl: '', sheetView: '', autoAdd: true, defaultCondition: 'Near Mint', ...store.get('settings', {}) });
   const inventory = () => store.get('inventory', []);
   const saveInventory = (list) => store.set('inventory', list);
 
   // ---------- UI helpers ----------
   let toastTimer;
-  function toast(msg, kind = 'ok') {
+  function toast(msg, kind = 'ok', action = null) {
     els.toast.textContent = msg;
+    if (action) {
+      const b = document.createElement('button');
+      b.className = 'toast-action';
+      b.textContent = action.label;
+      b.addEventListener('click', () => { els.toast.classList.add('hidden'); action.onClick(); });
+      els.toast.appendChild(b);
+    }
     els.toast.className = `toast ${kind}`;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => els.toast.classList.add('hidden'), 3200);
+    toastTimer = setTimeout(() => els.toast.classList.add('hidden'), action ? 7000 : 3200);
   }
   function setStatus(msg, isErr = false) {
     if (!msg) { els.status.classList.add('hidden'); return; }
@@ -363,13 +370,42 @@
       els.readText.textContent = `Read: ${[name, num && (num.total ? `${num.number}/${num.total}` : num.number)].filter(Boolean).join(' · ')}`;
       setStatus('Looking it up…');
       const cards = await findCards({ name, num });
-      showResults(cards);
+      const sure = confidentMatch(cards, num);
+      if (sure && settings().autoAdd) await autoAdd(sure);
+      else showResults(cards);
     } catch (e) {
       console.error(e);
       setStatus(e.message || 'Something went wrong.', true);
     } finally {
       busy = false; els.snap.disabled = false; els.snap.textContent = 'Scan card';
     }
+  }
+
+  // A scan is "sure" when only one card fits, or the best one clearly beats the rest
+  // and its number matched what was printed on the card.
+  function confidentMatch(cards, num) {
+    if (!cards.length || !num) return null;
+    const [a, b] = cards;
+    if (!sameNumber(a.number, num.number)) return null;
+    if (cards.length === 1) return a;
+    return a._score >= 1.75 && b._score < a._score - 0.25 ? a : null;
+  }
+
+  function defaultVariant(card) {
+    const vs = variantsOf(card);
+    return vs.find((v) => v.key === 'normal' && v.usd != null) || vs.find((v) => v.key === 'holofoil' && v.usd != null)
+      || vs.find((v) => v.usd != null) || vs[0];
+  }
+
+  async function autoAdd(card) {
+    selected = card;
+    const v = defaultVariant(card);
+    const row = buildRow({ variantKey: v.key, condition: settings().defaultCondition, quantity: 1, notes: '' });
+    setStatus(`Adding ${card.name}…`);
+    const msg = await saveRow(row);
+    selected = null;
+    setStatus(`Added ${row.name} · ${row.set} ${row.number} · ${row.variant} · ${money(row.priceUSD)}`);
+    toast(msg.text, msg.kind, { label: 'Undo', onClick: () => undoRow(row) });
   }
 
   els.snap.addEventListener('click', async () => {
@@ -459,10 +495,11 @@
   els.cVariant.addEventListener('change', updatePrice);
   els.cancelConfirm.addEventListener('click', () => showStep('results'));
 
-  function buildRow() {
+  function buildRow(o = null) {
     const c = selected;
-    const v = variantsOf(c).find((x) => x.key === els.cVariant.value) || variantsOf(c)[0];
-    const qty = Math.max(1, parseInt(els.cQty.value, 10) || 1);
+    const vKey = o ? o.variantKey : els.cVariant.value;
+    const v = variantsOf(c).find((x) => x.key === vKey) || variantsOf(c)[0];
+    const qty = Math.max(1, parseInt(o ? o.quantity : els.cQty.value, 10) || 1);
     return {
       localId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)),
       dateAdded: new Date().toISOString(),
@@ -474,22 +511,25 @@
       rarity: c.rarity || '',
       variant: v.label,
       variantKey: v.key,
-      condition: els.cCondition.value,
+      condition: o ? o.condition : els.cCondition.value,
       quantity: qty,
       priceUSD: v.usd,
       priceEUR: eurOf(c, v.key),
       tcgplayerUrl: c.tcgplayer?.url || '',
       imageUrl: c.images?.small || '',
-      notes: els.cNotes.value.trim(),
+      notes: o ? o.notes : els.cNotes.value.trim(),
       synced: false,
     };
   }
 
-  async function sendToSheet(row) {
+  function sendToSheet(row) {
+    const { synced, ...card } = row;
+    return postToSheet({ action: 'add', card });
+  }
+  async function postToSheet(payload) {
     const url = settings().sheetUrl;
     if (!url) return false;
-    const { synced, ...card } = row;
-    const body = JSON.stringify({ action: 'add', card });
+    const body = JSON.stringify(payload);
     try {
       // text/plain keeps this a "simple" request so Google accepts it from a web page.
       const res = await fetch(url, { method: 'POST', body, headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
@@ -502,23 +542,36 @@
     }
   }
 
-  els.save.addEventListener('click', async () => {
-    if (!selected) return;
-    const row = buildRow();
+  // Save on the phone, then send to the Sheet. Returns a message for the toast.
+  async function saveRow(row) {
     const list = inventory(); list.unshift(row); saveInventory(list);
-    els.save.disabled = true;
     const hasSheet = !!settings().sheetUrl;
     const ok = hasSheet && await sendToSheet(row);
-    els.save.disabled = false;
     if (ok) {
       row.synced = true;
       saveInventory(inventory().map((r) => (r.localId === row.localId ? row : r)));
-      toast(`Added ${row.name} to your Sheet`);
-    } else if (!hasSheet) {
-      toast(`Saved ${row.name} on this phone. Add your Sheet link in Settings to sync.`, 'err');
-    } else {
-      toast(`Saved ${row.name} on this phone. Sheet sync failed, retry from Inventory.`, 'err');
+      return { text: `Added ${row.name} to your Sheet`, kind: 'ok' };
     }
+    if (!hasSheet) return { text: `Saved ${row.name} on this phone. Add your Sheet link in Settings to sync.`, kind: 'err' };
+    return { text: `Saved ${row.name} on this phone. Sheet sync failed, retry from Inventory.`, kind: 'err' };
+  }
+
+  async function undoRow(row) {
+    saveInventory(inventory().filter((r) => r.localId !== row.localId));
+    let ok = true;
+    if (row.synced) ok = await postToSheet({ action: 'undo', localId: row.localId });
+    setStatus('');
+    toast(ok ? `Removed ${row.name}` : `Removed ${row.name} from this phone, but could not reach your Sheet. Delete it there by hand.`, ok ? 'ok' : 'err');
+    if (document.querySelector('#tab-inventory.active')) renderInventory();
+  }
+
+  els.save.addEventListener('click', async () => {
+    if (!selected) return;
+    els.save.disabled = true;
+    const row = buildRow();
+    const msg = await saveRow(row);
+    els.save.disabled = false;
+    toast(msg.text, msg.kind, { label: 'Undo', onClick: () => undoRow(row) });
     selected = null;
     showStep('camera');
   });
@@ -581,13 +634,17 @@
   // ---------- settings ----------
   function loadSettingsForm() {
     const s = settings();
-    els.setSheetUrl.value = s.sheetUrl || ''; els.setSheetView.value = s.sheetView || '';
+    els.setSheetUrl.value = s.sheetUrl || '';
+    els.setAutoAdd.checked = s.autoAdd !== false;
+    els.setCondition.value = s.defaultCondition || 'Near Mint'; els.setSheetView.value = s.sheetView || '';
     els.settingsMsg.textContent = '';
   }
   els.saveSettings.addEventListener('click', () => {
     store.set('settings', {
       sheetUrl: els.setSheetUrl.value.trim(),
       sheetView: els.setSheetView.value.trim(),
+      autoAdd: els.setAutoAdd.checked,
+      defaultCondition: els.setCondition.value,
     });
     els.settingsMsg.textContent = 'Saved.';
   });

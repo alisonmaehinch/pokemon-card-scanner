@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Card Scanner">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=4">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
   <header class="topbar">
@@ -125,6 +125,17 @@
     <label>Google Sheet address (optional, for the Open Sheet button)
       <input id="set-sheet-view" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
     </label>
+    <label class="check"><input id="set-auto-add" type="checkbox" checked> Add cards automatically when the scan is sure</label>
+    <p class="muted small">When it isn't sure, you'll still pick from the matches. Every auto-add has an Undo button.</p>
+    <label>Condition for auto-added cards
+      <select id="set-condition">
+        <option>Near Mint</option>
+        <option>Lightly Played</option>
+        <option>Moderately Played</option>
+        <option>Heavily Played</option>
+        <option>Damaged</option>
+      </select>
+    </label>
     <div class="row">
       <button id="save-settings" class="primary">Save</button>
       <button id="test-sheet" class="secondary">Test Sheet connection</button>
@@ -137,6 +148,6 @@
 
   <canvas id="canvas" hidden></canvas>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

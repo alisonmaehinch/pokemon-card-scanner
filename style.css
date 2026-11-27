@@ -133,3 +133,9 @@ label input, label select { margin-top: 4px; }
 }
 .toast.ok { border-left: 4px solid var(--ok); }
 .toast.err { border-left: 4px solid var(--err); }
+
+.toast { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(92vw, 420px); text-align: left; }
+.toast.hidden { display: none; }
+.toast-action { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 6px 12px; font-weight: 700; }
+label.check { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 16px; margin-top: 16px; }
+label.check input { width: 22px; height: 22px; margin: 0; flex: none; }

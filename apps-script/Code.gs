@@ -49,6 +49,7 @@ function doPost(e) {
   lock.waitLock(20000);
   try {
     const body = JSON.parse(e.postData.contents);
+    if (body.action === 'undo' && body.localId) return json_(undoScan_(body.localId));
     if (body.action !== 'add' || !body.card) return json_({ ok: false, error: 'bad request' });
     return json_(addCard_(body.card));
   } catch (err) {
@@ -116,6 +117,28 @@ function addCard_(c) {
   sh.getRange(r, COL['Total value (USD)']).setFormula('=IF(' + priceCell + '="","",' + priceCell + '*' + qtyCell + ')');
   if (c.imageUrl) sh.getRange(r, COL['Image']).setFormula('=IMAGE("' + String(c.imageUrl).replace(/"/g, '') + '")');
   return { ok: true, row: r };
+}
+
+// Take back one scan (the app's Undo button): lower the quantity, or remove the row.
+function undoScan_(localId) {
+  const sh = getSheet_();
+  const last = sh.getLastRow();
+  if (last < 2) return { ok: true, found: false };
+  const data = sh.getRange(2, 1, last - 1, HEADERS.length).getValues();
+  for (let i = 0; i < data.length; i++) {
+    const ids = String(data[i][COL['Scan IDs'] - 1] || '').split(',').filter(String);
+    const at = ids.indexOf(localId);
+    if (at === -1) continue;
+    const r = i + 2;
+    if (ids.length <= 1) { sh.deleteRow(r); return { ok: true, removed: true }; }
+    ids.splice(at, 1);
+    // Quantity added by that scan isn't stored per scan, so take one off.
+    const qty = Math.max(1, (Number(data[i][COL['Quantity'] - 1]) || 1) - 1);
+    sh.getRange(r, COL['Quantity']).setValue(qty);
+    sh.getRange(r, COL['Scan IDs']).setValue(ids.join(','));
+    return { ok: true, quantity: qty };
+  }
+  return { ok: true, found: false };
 }
 
 // ---------- Price refresh (menu + optional daily trigger) ----------
