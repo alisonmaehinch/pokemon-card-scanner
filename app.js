@@ -234,7 +234,7 @@
   }
 
   // Handles for checking the scanner on sample images.
-  window.__cardScanner = { grabGuideArea, readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q), matchNames: (t) => matchNames(t) }; // for testing
+  window.__cardScanner = { grabGuideArea, readLines: (t) => readLines(t), textEvidence: (c, t) => textEvidence(c, t), copyrightYear: (t) => copyrightYear(t), readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q), matchNames: (t) => matchNames(t) }; // for testing
 
   // From a photo: center-crop to card shape.
   function cropImageToCard(img) {
@@ -317,41 +317,70 @@
     return workerPromise;
   }
 
-  // Read the name (top line) and the collector number (bottom corners).
+  // Read the name (top of the card) and the collector number (bottom corners).
   // Tries a few crops and settings and stops at the first one that makes sense.
   async function readCard(card) {
     const worker = await getWorker();
     const set = (p) => worker.setParameters(p).catch(() => {});
 
-    let nameText = '';
-    await set({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '7' }); // one line of text
-    for (const [x0, y0, x1, y1, bin] of [
-      [0.04, 0.025, 0.78, 0.115, false],
-      [0.04, 0.025, 0.78, 0.115, true],
-      [0.12, 0.03, 0.72, 0.105, true],   // newer cards: name sits right of the stage badge
+    // Name: first the title line where it sits when the card fills the frame, then the
+    // whole top band, in case the card is smaller than the frame or not centered.
+    let nameText = '', names = [];
+    for (const [x0, y0, x1, y1, bin, psm] of [
+      [0.04, 0.025, 0.78, 0.115, false, '7'], // one line of text
+      [0.04, 0.025, 0.78, 0.115, true, '7'],
+      [0.12, 0.03, 0.72, 0.105, true, '7'],   // newer cards: name sits right of the stage badge
+      [0.0, 0.0, 1.0, 0.24, false, '11'],     // whole top band, scattered text
+      [0.0, 0.0, 1.0, 0.24, true, '11'],
     ]) {
+      await set({ tessedit_char_whitelist: '', tessedit_pageseg_mode: psm });
       const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1400, bin))).data.text || '';
-      if (parseName(t).replace(/[^A-Za-z]/g, '').length >= 3) { nameText = t; break; }
-      if (!nameText) nameText = t;
+      let found = [];
+      try { found = await matchNames(t); } catch { /* name list unavailable: fall back to the text alone */ }
+      if (found.length && (!names.length || found[0].score > names[0].score)) { names = found; nameText = t; }
+      if (names.length && names[0].score >= 0.85) break;
+      if (!found.length && !names.length && parseName(t).replace(/[^A-Za-z]/g, '').length >= 3 && !nameText) nameText = t;
     }
 
-    let numText = '';
+    // Number: lower-right on cards up to 2016, lower-left from Sun & Moon (2017) on.
+    // The copyright year, when it can be read, says which side to trust.
     await set({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ', tessedit_pageseg_mode: '11' }); // scattered text
-    for (const [x0, y0, x1, y1, mode] of [
-      [0.0, 0.89, 0.6, 0.985, 'bin'],    // bottom-left (Scarlet & Violet, Sword & Shield)
-      [0.0, 0.90, 0.35, 0.97, 'gray'],   // tight bottom-left (Sun & Moon)
-      [0.0, 0.90, 0.35, 0.97, 'inv'],    // white numbers on full-art cards
-      [0.4, 0.86, 1.0, 0.975, 'bin'],    // bottom-right (older cards)
-      [0.65, 0.88, 1.0, 0.97, 'gray'],
-      [0.0, 0.93, 0.30, 0.98, 'gray'],
-      [0.0, 0.86, 1.0, 0.985, 'gray'],   // whole bottom strip (Base Set era)
-    ]) {
-      const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1600, mode))).data.text || '';
-      if (parseNumber(t)) { numText = t; break; }
+    const regions = [
+      { side: 'L', r: [0.0, 0.89, 0.6, 0.985], mode: 'bin' },   // bottom-left (Scarlet & Violet, Sword & Shield)
+      { side: 'L', r: [0.0, 0.90, 0.35, 0.97], mode: 'gray' },  // tight bottom-left (Sun & Moon)
+      { side: 'L', r: [0.0, 0.90, 0.35, 0.97], mode: 'inv' },   // white numbers on full-art cards
+      { side: 'R', r: [0.4, 0.86, 1.0, 0.975], mode: 'bin' },   // bottom-right (older cards)
+      { side: 'R', r: [0.65, 0.88, 1.0, 0.97], mode: 'gray' },
+      { side: 'L', r: [0.0, 0.93, 0.30, 0.98], mode: 'gray' },
+      { side: 'A', r: [0.0, 0.86, 1.0, 0.985], mode: 'gray' },  // whole bottom strip (Base Set era, cards off-center)
+    ];
+    const totals = await allSets().then((s) => new Set(s.map((x) => x.cardCount?.official).filter(Boolean))).catch(() => null);
+    let numText = '', num = null, fallback = null, year = null;
+    while (regions.length) {
+      const { side, r, mode } = regions.shift();
+      const t = (await worker.recognize(region(card, ...r, 1600, mode))).data.text || '';
       numText += '\n' + t;
+      if (!year) {
+        year = copyrightYear(t);
+        if (year) { const want = year <= 2016 ? 'R' : 'L'; regions.sort((a, b) => (b.side === want) - (a.side === want)); }
+      }
+      const p = parseNumber(t);
+      if (!p) continue;
+      // A set must exist with that many cards, otherwise it's a misread ("2/108" from "×2" and glare).
+      const real = !p.total || !totals || !totals.size || totals.has(p.total);
+      const rightSide = !year || side === 'A' || side === (year <= 2016 ? 'R' : 'L');
+      if (real && rightSide) { num = p; break; }
+      if (real && !fallback) fallback = p;
     }
+    if (!num) num = fallback;
     await set({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
-    return { nameText, numText };
+    return { nameText, names, num, numText };
+  }
+
+  // "©2015 Pokémon" → 2015. Wizards-era cards say "©1995, 96, 98, 99 Nintendo…".
+  function copyrightYear(text) {
+    const m = String(text).match(/(?:^|\D)(199[5-9]|20[0-4]\d)(?!\d)/);
+    return m ? parseInt(m[1], 10) : null;
   }
 
   // Read everything inside the frame, wherever it is.
@@ -427,6 +456,8 @@
       name: d.name,
       number: d.localId,
       rarity: d.rarity || '',
+      hp: d.hp || null,
+      moves: [...(d.attacks || []), ...(d.abilities || [])].map((a) => a?.name).filter(Boolean),
       set: { id: d.set?.id || '', name: d.set?.name || '', printedTotal: d.set?.cardCount?.official ?? '' },
       images: d.image ? { small: `${d.image}/low.webp`, large: `${d.image}/high.webp` } : {},
       tcgplayer: { url: productId ? `https://www.tcgplayer.com/product/${productId}` : '', prices },
@@ -493,7 +524,12 @@
     }
     return prev[n];
   }
-  const readLines = (text) => text.split('\n').map(norm).filter((l) => l.length >= 3);
+  // Lines that name a different Pokémon than the card's own: "Evolves from Shelgon",
+  // "Put Salamence-EX on …". The text reader often garbles them ("Evoives fram Shelgon").
+  const NOT_TITLE = /vol?v|[eo][il1]ves\b|\bfr(?:[o0a]m|orn|on|m)\b|\bput\b.*\bon/i;
+  const readLines = (text, all = false) => text.split('\n')
+    .filter((l) => all || !NOT_TITLE.test(l))
+    .map(norm).filter((l) => l.length >= 3);
   // How well a (normalized) card name appears somewhere in the read lines, 0..1.
   function nameFit(n, lines) {
     if (n.length < 3) return 0;
@@ -562,7 +598,30 @@
     if (both.length) brief = both;
     const top = brief.slice(0, 16);
     const details = await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null)));
-    return details.map((d, i) => d && Object.assign(normalize(d), { _score: top[i]._score, _name: top[i]._name, _num: top[i]._num })).filter(Boolean);
+    return details.map((d, i) => d && Object.assign(normalize(d), { _score: top[i]._score, _name: top[i]._name, _num: top[i]._num, _text: 0 })).filter(Boolean);
+  }
+
+  // Share of a card's HP and attack/ability names that also appear in the text read off the
+  // card, 0..1. Tells apart cards whose name or number was misread.
+  function textEvidence(card, text) {
+    const lines = readLines(text, true);
+    let hit = 0, total = 0;
+    for (const m of card.moves || []) {
+      const n = norm(m);
+      if (n.length < 4) continue;
+      total++;
+      if (nameFit(n, lines) >= 0.85) hit++;
+    }
+    if (card.hp) {
+      total++;
+      if (new RegExp(`(^|\\D)${card.hp}(\\D|$)`).test(text)) hit++;
+    }
+    return total ? hit / total : 0;
+  }
+  function rerank(cards, text) {
+    if (!text) return cards;
+    cards.forEach((c) => { c._text = textEvidence(c, text); c._score += 2 * c._text; });
+    return [...cards].sort((a, b) => b._score - a._score);
   }
 
   // ---------- prices ----------
@@ -598,16 +657,16 @@
     try {
       setStatus('Reading the card…');
       try { els.scanThumb.src = card.toDataURL('image/jpeg', 0.6); els.scanThumb.classList.remove('hidden'); } catch { /* ignore */ }
-      const { nameText, numText } = await readCard(card);
-      const num = parseNumber(numText);
+      const read = await readCard(card);
       setStatus('Matching the name…');
-      let names = await matchNames(nameText);
-      let numFinal = num;
+      let names = read.names.length ? read.names : await matchNames(read.nameText);
+      let numFinal = read.num;
+      let whole = null;
       // If the card isn't lined up with the frame, the name or number may sit outside
       // the spots we read. Then read the whole frame and look for them anywhere.
-      if (!names.length || names[0].score < 0.85 || !num) {
+      if (!names.length || names[0].score < 0.85 || !numFinal) {
         setStatus('Taking a closer look…');
-        const whole = await readWhole(card);
+        whole = await readWhole(card);
         if (!names.length || names[0].score < 0.85) {
           const more = await matchNames(whole);
           if (more.length && (!names.length || more[0].score > names[0].score)) names = more;
@@ -621,10 +680,17 @@
       }
       els.readText.textContent = `Read: ${[name, numFinal && (numFinal.total ? `${numFinal.number}/${numFinal.total}` : numFinal.number)].filter(Boolean).join(' · ')}`;
       setStatus('Looking it up…');
-      const cards = await findCards({ names, num: numFinal });
-      const sure = confidentMatch(cards);
+      let cards = await findCards({ names, num: numFinal });
+      let sure = confidentMatch(cards);
+      // Not sure yet: check each candidate's HP and attack names against everything on the card.
+      if (!sure && cards.length) {
+        setStatus('Double-checking the attacks and HP…');
+        if (whole == null) whole = await readWhole(card);
+        cards = rerank(cards, whole);
+        sure = confidentMatch(cards);
+      }
       if (sure && settings().autoAdd) await autoAdd(sure);
-      else showResults(cards);
+      else showResults(cards, { fromScan: true });
     } catch (e) {
       console.error(e);
       setStatus(e.message || 'Something went wrong.', true);
@@ -638,8 +704,9 @@
   function confidentMatch(cards) {
     if (!cards.length) return null;
     const [a, b] = cards;
-    // Sure = the name was read well AND the number matched, and nothing else comes close.
-    if (!a._num || a._name < 0.85) return null;
+    // Sure = the name was read well AND (the number matched, or most of the attacks and HP did),
+    // and nothing else comes close.
+    if (a._name < 0.85 || !(a._num || a._text >= 0.67)) return null;
     if (b && b._score > a._score - 0.4) return null;
     return a;
   }
@@ -704,13 +771,17 @@
   });
 
   let currentResults = [];
-  function showResults(cards) {
+  function showResults(cards, { fromScan = false } = {}) {
     currentResults = cards;
     if (!cards.length) {
       setStatus('No matching cards found. Try again, or type the name below.', true);
       return;
     }
     setStatus('');
+    // Weak scan: the best card's name wasn't read clearly, or nothing else on the card backs it up.
+    const top = cards[0];
+    const strong = top._name >= 0.85 && (top._num || top._text >= 0.5);
+    $('match-note').classList.toggle('hidden', !fromScan || strong);
     els.results.innerHTML = cards.map((c, i) => `
       <button class="card-opt" data-i="${i}">
         <img loading="lazy" src="${esc(c.images?.small)}" alt="" onerror="this.style.visibility='hidden'">
@@ -725,6 +796,10 @@
     if (btn) showConfirm(currentResults[+btn.dataset.i]);
   });
   els.backToCamera.addEventListener('click', () => { setStatus(''); showStep('camera'); });
+  $('note-search').addEventListener('click', () => {
+    setStatus(''); showStep('camera');
+    els.searchName.focus(); els.searchName.scrollIntoView({ block: 'center' });
+  });
 
   // ---------- confirm & save ----------
   let selected = null;
