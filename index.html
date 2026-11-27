@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Card Scanner">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -29,11 +29,17 @@
     <section id="camera-step">
       <div class="camera-wrap">
         <video id="video" playsinline muted autoplay></video>
-        <div class="guide"><span>Line the card up inside the frame</span></div>
+        <div class="guide" id="guide"></div>
         <div id="camera-off" class="camera-off hidden">
           <p>Camera is off.</p>
           <button id="start-camera" class="primary">Turn on camera</button>
         </div>
+      </div>
+      <p class="hint">Drag the yellow frame to move it. Pinch or use the sliders to resize and zoom.</p>
+      <div class="sliders">
+        <label>Frame size <input id="guide-size" type="range" min="30" max="98" step="1"></label>
+        <label>Zoom <input id="zoom" type="range" min="1" max="3" step="0.05" value="1"></label>
+        <button id="guide-reset" class="link" type="button">Reset</button>
       </div>
       <div class="row">
         <button id="snap" class="primary big">Scan card</button>
@@ -148,6 +154,6 @@
 
   <canvas id="canvas" hidden></canvas>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

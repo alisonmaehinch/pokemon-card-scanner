@@ -4,7 +4,6 @@
 
   const API = 'https://api.tcgdex.net/v2/en';
   const CARD_RATIO = 63 / 88; // width / height of a trading card
-  const GUIDE_WIDTH = 0.72;   // must match .guide width in style.css
 
   const $ = (id) => document.getElementById(id);
   const els = {
@@ -97,6 +96,8 @@
       els.video.srcObject = stream;
       await els.video.play().catch(() => {});
       els.cameraOff.classList.add('hidden');
+      setupZoom();
+      placeGuide();
     } catch (e) {
       console.warn('camera', e);
       els.cameraOff.classList.remove('hidden');
@@ -114,23 +115,123 @@
   });
   els.startCamera.addEventListener('click', startCamera);
 
-  // Crop the area inside the on-screen guide from the live video.
+  // ---------- movable frame + zoom ----------
+  const wrap = document.querySelector('.camera-wrap');
+  const guide = $('guide');
+  const sizeSlider = $('guide-size');
+  const zoomSlider = $('zoom');
+  const DEFAULT_GUIDE = { x: 0.5, y: 0.5, w: 0.72 };
+  let g = { ...DEFAULT_GUIDE, ...store.get('guide', {}) };
+  let zoom = 1, hwZoom = null; // hwZoom = camera's own zoom range, when it has one
+
+  function placeGuide() {
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    if (!W || !H) return;
+    // Keep the frame inside the camera view.
+    const maxW = Math.min(0.98, (H * 0.98 * CARD_RATIO) / W);
+    g.w = Math.max(0.3, Math.min(g.w, maxW));
+    const halfW = g.w / 2, halfH = (g.w * W / CARD_RATIO) / H / 2;
+    g.x = Math.max(halfW, Math.min(1 - halfW, g.x));
+    g.y = Math.max(halfH, Math.min(1 - halfH, g.y));
+    guide.style.left = `${g.x * 100}%`;
+    guide.style.top = `${g.y * 100}%`;
+    guide.style.width = `${g.w * 100}%`;
+    sizeSlider.max = Math.round(maxW * 100);
+    sizeSlider.value = Math.round(g.w * 100);
+  }
+  const saveGuide = () => store.set('guide', g);
+  window.addEventListener('resize', placeGuide);
+  sizeSlider.addEventListener('input', () => { g.w = sizeSlider.value / 100; placeGuide(); saveGuide(); });
+
+  // One finger drags the frame; two fingers pinch to resize it.
+  const pointers = new Map();
+  let start = null;
+  wrap.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    wrap.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    start = { g: { ...g }, pts: new Map([...pointers].map(([k, v]) => [k, { ...v }])) };
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId) || !start) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    const ids = [...pointers.keys()];
+    if (ids.length === 1) {
+      const p0 = start.pts.get(ids[0]); if (!p0) return;
+      const p = pointers.get(ids[0]);
+      g.x = start.g.x + (p.x - p0.x) / W;
+      g.y = start.g.y + (p.y - p0.y) / H;
+    } else if (ids.length >= 2) {
+      const [a, b] = ids.slice(0, 2);
+      const a0 = start.pts.get(a), b0 = start.pts.get(b); if (!a0 || !b0) return;
+      const d0 = Math.hypot(a0.x - b0.x, a0.y - b0.y), d1 = Math.hypot(pointers.get(a).x - pointers.get(b).x, pointers.get(a).y - pointers.get(b).y);
+      if (d0 > 10) g.w = start.g.w * (d1 / d0);
+    }
+    placeGuide();
+  });
+  const endPointer = (e) => {
+    pointers.delete(e.pointerId);
+    start = pointers.size ? { g: { ...g }, pts: new Map([...pointers].map(([k, v]) => [k, { ...v }])) } : null;
+    saveGuide();
+  };
+  wrap.addEventListener('pointerup', endPointer);
+  wrap.addEventListener('pointercancel', endPointer);
+  // iOS Safari: stop the page itself from zooming on pinch.
+  wrap.addEventListener('gesturestart', (e) => e.preventDefault());
+
+  function setupZoom() {
+    const track = stream?.getVideoTracks()[0];
+    const caps = track?.getCapabilities ? track.getCapabilities() : {};
+    if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+      hwZoom = { min: caps.zoom.min, max: Math.min(caps.zoom.max, caps.zoom.min * 5) };
+      zoomSlider.min = hwZoom.min; zoomSlider.max = hwZoom.max;
+    } else {
+      hwZoom = null; zoomSlider.min = 1; zoomSlider.max = 3;
+    }
+    zoom = Math.max(+zoomSlider.min, Math.min(+zoomSlider.max, store.get('zoom', 1)));
+    zoomSlider.value = zoom;
+    applyZoom();
+  }
+  async function applyZoom() {
+    const track = stream?.getVideoTracks()[0];
+    if (hwZoom && track) {
+      els.video.style.transform = '';
+      try { await track.applyConstraints({ advanced: [{ zoom }] }); } catch { /* ignore */ }
+    } else {
+      els.video.style.transform = zoom > 1 ? `scale(${zoom})` : '';
+    }
+  }
+  zoomSlider.addEventListener('input', () => { zoom = +zoomSlider.value; store.set('zoom', zoom); applyZoom(); });
+  $('guide-reset').addEventListener('click', () => {
+    g = { ...DEFAULT_GUIDE }; placeGuide(); saveGuide();
+    zoom = +zoomSlider.min; zoomSlider.value = zoom; store.set('zoom', zoom); applyZoom();
+  });
+  placeGuide();
+
+  // Crop the area inside the on-screen frame from the live video.
   function grabGuideArea() {
     const v = els.video;
     const vw = v.videoWidth, vh = v.videoHeight;
     if (!vw || !vh) return null;
-    const box = v.getBoundingClientRect();
-    // object-fit: cover scaling
-    const scale = Math.max(box.width / vw, box.height / vh);
-    const shownW = box.width / scale, shownH = box.height / scale;
-    const offX = (vw - shownW) / 2, offY = (vh - shownH) / 2;
-    const gW = shownW * GUIDE_WIDTH, gH = gW / CARD_RATIO;
-    const sx = offX + (shownW - gW) / 2, sy = offY + (shownH - gH) / 2;
+    const box = v.getBoundingClientRect();     // includes the digital-zoom scale
+    const gr = guide.getBoundingClientRect();
+    const scale = Math.max(box.width / vw, box.height / vh); // object-fit: cover
+    const offX = (vw - box.width / scale) / 2, offY = (vh - box.height / scale) / 2;
+    const border = 3;
+    const sx = offX + (gr.left + border - box.left) / scale;
+    const sy = offY + (gr.top + border - box.top) / scale;
+    const sw = (gr.width - 2 * border) / scale, sh = (gr.height - 2 * border) / scale;
     const c = document.createElement('canvas');
-    c.width = Math.round(gW); c.height = Math.round(gH);
-    c.getContext('2d').drawImage(v, sx, sy, gW, gH, 0, 0, c.width, c.height);
+    const k = Math.max(1, 900 / sw); // small crops get upscaled a bit for the text reader
+    c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
     return c;
   }
+
+  window.__cardScanner = { grabGuideArea }; // for testing
 
   // From a photo: center-crop to card shape.
   function cropImageToCard(img) {
