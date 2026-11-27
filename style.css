@@ -143,3 +143,7 @@ label input, label select { margin-top: 4px; }
 .toast-action { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 6px 12px; font-weight: 700; }
 label.check { display: flex; align-items: center; gap: 10px; color: var(--text); font-size: 16px; margin-top: 16px; }
 label.check input { width: 22px; height: 22px; margin: 0; flex: none; }
+
+.read-row { display: flex; gap: 10px; align-items: center; }
+.read-row p { margin: 6px 0; }
+#scan-thumb { width: 54px; border-radius: 6px; border: 1px solid #36405a; flex: none; }

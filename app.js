@@ -10,7 +10,7 @@
     video: $('video'), canvas: $('canvas'), snap: $('snap'), fileInput: $('file-input'),
     cameraOff: $('camera-off'), startCamera: $('start-camera'),
     status: $('status'), cameraStep: $('camera-step'), resultsStep: $('results-step'),
-    confirmStep: $('confirm-step'), results: $('results'), readText: $('read-text'),
+    confirmStep: $('confirm-step'), results: $('results'), readText: $('read-text'), scanThumb: $('scan-thumb'),
     searchForm: $('search-form'), searchName: $('search-name'), searchNumber: $('search-number'),
     cImg: $('c-img'), cName: $('c-name'), cSet: $('c-set'), cRarity: $('c-rarity'),
     cVariant: $('c-variant'), cPrice: $('c-price'), cPriceEu: $('c-price-eu'),
@@ -354,6 +354,15 @@
     return { nameText, numText };
   }
 
+  // Read everything inside the frame, wherever it is.
+  async function readWhole(card) {
+    const worker = await getWorker();
+    await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '11' }).catch(() => {});
+    const t = (await worker.recognize(region(card, 0, 0, 1, 1, 1400))).data.text || '';
+    await worker.setParameters({ tessedit_pageseg_mode: '3' }).catch(() => {});
+    return t;
+  }
+
   const STOP_WORDS = new Set(['basic', 'stage', 'stagel', 'stage1', 'stage2', 'hp', 'evolves', 'from', 'put', 'on', 'the', 'pokemon', 'pokémon', 'trainer', 'item', 'supporter', 'energy', 'tool']);
   function parseName(text) {
     const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -548,6 +557,9 @@
       c._name = ns; c._num = !!numOk;
     });
     brief.sort((a, b) => b._score - a._score);
+    // When a card matches BOTH the name and the number, show only those.
+    const both = brief.filter((c) => c._num && c._name >= 0.8);
+    if (both.length) brief = both;
     const top = brief.slice(0, 16);
     const details = await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null)));
     return details.map((d, i) => d && Object.assign(normalize(d), { _score: top[i]._score, _name: top[i]._name, _num: top[i]._num })).filter(Boolean);
@@ -585,18 +597,31 @@
     busy = true; els.snap.disabled = true; els.snap.textContent = 'Reading…';
     try {
       setStatus('Reading the card…');
+      try { els.scanThumb.src = card.toDataURL('image/jpeg', 0.6); els.scanThumb.classList.remove('hidden'); } catch { /* ignore */ }
       const { nameText, numText } = await readCard(card);
       const num = parseNumber(numText);
       setStatus('Matching the name…');
-      const names = await matchNames(nameText);
+      let names = await matchNames(nameText);
+      let numFinal = num;
+      // If the card isn't lined up with the frame, the name or number may sit outside
+      // the spots we read. Then read the whole frame and look for them anywhere.
+      if (!names.length || names[0].score < 0.85 || !num) {
+        setStatus('Taking a closer look…');
+        const whole = await readWhole(card);
+        if (!names.length || names[0].score < 0.85) {
+          const more = await matchNames(whole);
+          if (more.length && (!names.length || more[0].score > names[0].score)) names = more;
+        }
+        if (!numFinal) numFinal = parseNumber(whole);
+      }
       const name = names[0]?.name || '';
-      if (!name && !num) {
+      if (!name && !numFinal) {
         setStatus('I could not read that card. Try again with less glare, or type the name below.', true, 6000);
         return;
       }
-      els.readText.textContent = `Read: ${[name, num && (num.total ? `${num.number}/${num.total}` : num.number)].filter(Boolean).join(' · ')}`;
+      els.readText.textContent = `Read: ${[name, numFinal && (numFinal.total ? `${numFinal.number}/${numFinal.total}` : numFinal.number)].filter(Boolean).join(' · ')}`;
       setStatus('Looking it up…');
-      const cards = await findCards({ names, num });
+      const cards = await findCards({ names, num: numFinal });
       const sure = confidentMatch(cards);
       if (sure && settings().autoAdd) await autoAdd(sure);
       else showResults(cards);
