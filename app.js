@@ -247,7 +247,9 @@
   }
 
   // Cut a region (fractions of the card) and prep it for OCR.
-  function region(card, x0, y0, x1, y1, targetW = 1400, binarize = false) {
+  // mode: 'gray' (default), 'bin' (black and white), 'inv' (gray, flipped for light text on dark)
+  function region(card, x0, y0, x1, y1, targetW = 1400, mode = 'gray') {
+    const binarize = mode === 'bin' || mode === true;
     const sx = card.width * x0, sy = card.height * y0;
     const sw = card.width * (x1 - x0), sh = card.height * (y1 - y0);
     const k = Math.max(1, targetW / sw);
@@ -289,7 +291,7 @@
       for (let i = 0; i < 256; i++) if (i < t) dark += hist[i];
     }
     // Text reads best dark-on-light; flip when most of the strip is dark.
-    const invert = binarize && dark > px.length / 8;
+    const invert = mode === 'inv' || (binarize && dark > px.length / 8);
     for (let i = 0; i < px.length; i += 4) {
       let g = binarize ? (px[i] < t ? 0 : 255) : px[i];
       if (invert) g = 255 - g;
@@ -334,13 +336,15 @@
 
     let numText = '';
     await set({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ', tessedit_pageseg_mode: '11' }); // scattered text
-    for (const [x0, y0, x1, y1, bin] of [
-      [0.0, 0.89, 0.6, 0.985, true],     // bottom-left (Sword & Shield, Scarlet & Violet)
-      [0.4, 0.86, 1.0, 0.975, true],     // bottom-right (older cards)
-      [0.0, 0.86, 1.0, 0.985, false],    // whole bottom strip
-      [0.0, 0.86, 1.0, 0.985, true],
+    for (const [x0, y0, x1, y1, mode] of [
+      [0.0, 0.90, 0.35, 0.97, 'gray'],   // bottom-left (most cards since 2011)
+      [0.0, 0.93, 0.30, 0.98, 'gray'],
+      [0.0, 0.90, 0.35, 0.97, 'inv'],    // white numbers on full-art cards
+      [0.65, 0.88, 1.0, 0.97, 'gray'],   // bottom-right (older cards)
+      [0.65, 0.88, 1.0, 0.97, 'inv'],
+      [0.0, 0.86, 1.0, 0.985, 'bin'],    // whole bottom strip
     ]) {
-      const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1800, bin))).data.text || '';
+      const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1600, mode))).data.text || '';
       if (parseNumber(t)) { numText = t; break; }
       numText += '\n' + t;
     }
@@ -365,12 +369,23 @@
   }
 
   function parseNumber(text) {
-    const t = text.replace(/[Oo](?=\d)/g, '0').replace(/(\d)[Oo]/g, '$10').replace(/[Il|](?=\d)/g, '1');
-    // Trainer Gallery / Galarian Gallery style: TG05/TG30, GG01/GG70
-    let m = t.match(/\b([A-Z]{2}\d{1,3})\s*\/\s*([A-Z]{2}\d{1,3})\b/);
+    const t = text.toUpperCase().replace(/O(?=\d)/g, '0').replace(/(\d)O/g, '$10').replace(/[IL|](?=\d)/g, '1');
+    // Trainer Gallery / Galarian Gallery: TG05/TG30, GG01/GG70 (T is often read as 7, I or 1)
+    let m = t.match(/([T7I1F]?G|GG)\s?(\d{1,2})[ \t]*\/[ \t]*[T7I1]?G\s?(\d{2})/);
+    if (m) {
+      const prefix = m[1] === 'GG' ? 'GG' : 'TG';
+      return { number: prefix + m[2].padStart(2, '0'), total: null };
+    }
+    m = t.match(/([A-Z]{2}\d{1,3})[ \t]*\/[ \t]*([A-Z]{2}\d{1,3})/);
     if (m) return { number: m[1], total: null };
-    m = t.match(/(\d{1,3})\s*\/\s*(\d{2,3})/);
-    if (m) return { number: String(parseInt(m[1], 10)), total: parseInt(m[2], 10) };
+    // Normal numbers: 4/102, 054/091 (same line only, so stray digits don't pair up)
+    m = t.match(/(\d{1,3})[ \t]*\/[ \t]*(\d{2,3})/);
+    if (m) {
+      let n = m[1];
+      // A stray mark before the number is often read as a digit ("514/181" for "14/181").
+      if (n.length === 3 && parseInt(n, 10) > parseInt(m[2], 10) + 120) n = n.slice(1);
+      return { number: String(parseInt(n, 10)), total: parseInt(m[2], 10) };
+    }
     // Promos: SWSH123, SM45, SV045, XY12 …
     m = t.match(/\b(SWSH|SVP|SV|SM|XY|BW|HGSS|DP)\s?(\d{1,3})\b/);
     if (m) return { number: m[1] + m[2].padStart(m[1] === 'SV' || m[1] === 'SVP' ? 3 : 2, '0'), total: null, promo: true };
@@ -527,7 +542,7 @@
       const ns = lines.length ? nameFit(norm(c.name), lines) : (typed ? similarity(typed, c.name) : 0);
       const numOk = num && sameNumber(c.localId, num.number);
       const totOk = num?.total && setTotal.get(setOf(c)) === num.total;
-      c._score = 2 * ns + (numOk ? 1 : 0) + (totOk ? 0.5 : 0) + (order.get(setOf(c)) ?? 0) / 100000;
+      c._score = 3 * ns + (numOk ? 1 : 0) + (totOk ? 0.5 : 0) + (order.get(setOf(c)) ?? 0) / 100000;
       c._name = ns; c._num = !!numOk;
     });
     brief.sort((a, b) => b._score - a._score);
