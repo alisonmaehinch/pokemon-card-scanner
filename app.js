@@ -250,9 +250,17 @@
   }
 
   let setsPromise = null;
-  async function setsWithTotal(total) {
+  async function allSets() {
     if (!setsPromise) setsPromise = getJSON('sets').catch((e) => { setsPromise = null; throw e; });
-    const sets = (await setsPromise) || [];
+    return (await setsPromise) || [];
+  }
+  // TCGdex lists sets oldest first; a higher number means a newer set.
+  async function setOrder() {
+    const sets = await allSets().catch(() => []);
+    return new Map(sets.map((x, i) => [x.id, i]));
+  }
+  async function setsWithTotal(total) {
+    const sets = await allSets();
     return new Set(sets.filter((x) => x.cardCount?.official === total).map((x) => x.id));
   }
 
@@ -284,10 +292,9 @@
       }
     }
     if (!brief.length && num) {
-      const n = num.number;
-      const forms = /^\d+$/.test(n) ? [...new Set([n, n.padStart(2, '0'), n.padStart(3, '0')])] : [n];
-      const lists = await Promise.all(forms.map((f) => getJSON(`cards?localId=eq:${encodeURIComponent(f)}`)));
-      brief = lists.flat().filter(Boolean);
+      // TCGdex number search matches "contains", so "54" also finds "054" and "154"; keep exact ones.
+      const n = /^\d+$/.test(num.number) ? String(parseInt(num.number, 10)) : num.number;
+      brief = ((await getJSON(`cards?localId=${encodeURIComponent(n)}`)) || []).filter((c) => sameNumber(c.localId, num.number));
     }
     if (!brief.length) return [];
     // Keep only cards from sets whose printed size matches the "/91" part, when we have it.
@@ -296,8 +303,10 @@
       const inSet = brief.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
       if (inSet.length) brief = inSet;
     }
-    // Rank by name before fetching details, then fetch details for the best few.
-    brief.forEach((c) => { c._s = name ? similarity(name, c.name) : 0; });
+    // Rank by name (then newest set first) before fetching details for the best few.
+    const order = await setOrder();
+    const setOf = (c) => c.id.slice(0, c.id.lastIndexOf('-'));
+    brief.forEach((c) => { c._s = (name ? similarity(name, c.name) : 0) + (order.get(setOf(c)) ?? 0) / 100000; });
     brief.sort((a, b) => b._s - a._s);
     const top = brief.slice(0, num && !name ? 40 : 16);
     const details = (await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null))))
@@ -414,7 +423,7 @@
     setStatus('');
     els.results.innerHTML = cards.map((c, i) => `
       <button class="card-opt" data-i="${i}">
-        <img loading="lazy" src="${esc(c.images?.small)}" alt="">
+        <img loading="lazy" src="${esc(c.images?.small)}" alt="" onerror="this.style.visibility='hidden'">
         <span class="t">${esc(c.name)}</span>
         <span class="s">${esc(c.set.name)} · ${esc(c.number)}/${esc(c.set.printedTotal)}</span>
         <span class="p">${money(bestPrice(c))}</span>
