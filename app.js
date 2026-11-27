@@ -233,7 +233,7 @@
     return c;
   }
 
-  window.__cardScanner = { grabGuideArea }; // for testing
+  window.__cardScanner = { grabGuideArea, readCard: (c) => readCard(c), parseName: (t) => parseName(t), parseNumber: (t) => parseNumber(t), findCards: (q) => findCards(q) }; // for testing
 
   // From a photo: center-crop to card shape.
   function cropImageToCard(img) {
@@ -247,7 +247,7 @@
   }
 
   // Cut a region (fractions of the card) and prep it for OCR.
-  function region(card, x0, y0, x1, y1, targetW = 1400) {
+  function region(card, x0, y0, x1, y1, targetW = 1400, binarize = false) {
     const sx = card.width * x0, sy = card.height * y0;
     const sw = card.width * (x1 - x0), sh = card.height * (y1 - y0);
     const k = Math.max(1, targetW / sw);
@@ -267,8 +267,32 @@
       if (g > max) max = g;
     }
     const range = Math.max(1, max - min);
+    const hist = new Array(256).fill(0);
     for (let i = 0; i < px.length; i += 4) {
       const g = ((px[i] - min) / range) * 255;
+      px[i] = g; hist[g | 0]++;
+    }
+    let t = 128, dark = 0;
+    if (binarize) {
+      // Otsu threshold: the split that best separates text from background.
+      const total = px.length / 4;
+      let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+      let sumB = 0, wB = 0, best = -1;
+      for (let i = 0; i < 256; i++) {
+        wB += hist[i]; if (!wB) continue;
+        const wF = total - wB; if (!wF) break;
+        sumB += i * hist[i];
+        const mB = sumB / wB, mF = (sum - sumB) / wF;
+        const between = wB * wF * (mB - mF) ** 2;
+        if (between > best) { best = between; t = i; }
+      }
+      for (let i = 0; i < 256; i++) if (i < t) dark += hist[i];
+    }
+    // Text reads best dark-on-light; flip when most of the strip is dark.
+    const invert = binarize && dark > px.length / 8;
+    for (let i = 0; i < px.length; i += 4) {
+      let g = binarize ? (px[i] < t ? 0 : 255) : px[i];
+      if (invert) g = 255 - g;
       px[i] = px[i + 1] = px[i + 2] = g;
     }
     ctx.putImageData(d, 0, 0);
@@ -290,13 +314,38 @@
     return workerPromise;
   }
 
+  // Read the name (top line) and the collector number (bottom corners).
+  // Tries a few crops and settings and stops at the first one that makes sense.
   async function readCard(card) {
     const worker = await getWorker();
-    const top = region(card, 0.04, 0.025, 0.80, 0.115);
-    const bottom = region(card, 0.0, 0.88, 1.0, 0.985, 1800);
-    const nameRes = await worker.recognize(top);
-    const numRes = await worker.recognize(bottom);
-    return { nameText: nameRes.data.text || '', numText: numRes.data.text || '' };
+    const set = (p) => worker.setParameters(p).catch(() => {});
+
+    let nameText = '';
+    await set({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '7' }); // one line of text
+    for (const [x0, y0, x1, y1, bin] of [
+      [0.04, 0.025, 0.78, 0.115, false],
+      [0.04, 0.025, 0.78, 0.115, true],
+      [0.12, 0.03, 0.72, 0.105, true],   // newer cards: name sits right of the stage badge
+    ]) {
+      const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1400, bin))).data.text || '';
+      if (parseName(t).replace(/[^A-Za-z]/g, '').length >= 3) { nameText = t; break; }
+      if (!nameText) nameText = t;
+    }
+
+    let numText = '';
+    await set({ tessedit_char_whitelist: '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ', tessedit_pageseg_mode: '11' }); // scattered text
+    for (const [x0, y0, x1, y1, bin] of [
+      [0.0, 0.89, 0.6, 0.985, true],     // bottom-left (Sword & Shield, Scarlet & Violet)
+      [0.4, 0.86, 1.0, 0.975, true],     // bottom-right (older cards)
+      [0.0, 0.86, 1.0, 0.985, false],    // whole bottom strip
+      [0.0, 0.86, 1.0, 0.985, true],
+    ]) {
+      const t = (await worker.recognize(region(card, x0, y0, x1, y1, 1800, bin))).data.text || '';
+      if (parseNumber(t)) { numText = t; break; }
+      numText += '\n' + t;
+    }
+    await set({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
+    return { nameText, numText };
   }
 
   const STOP_WORDS = new Set(['basic', 'stage', 'stagel', 'stage1', 'stage2', 'hp', 'evolves', 'from', 'put', 'on', 'the', 'pokemon', 'pokémon', 'trainer', 'item', 'supporter', 'energy', 'tool']);
@@ -395,6 +444,11 @@
       const firstWord = name.split(/\s+/)[0].replace(/[^A-Za-zÀ-ÿ]/g, '');
       brief = (await getJSON(`cards?name=${encodeURIComponent(name)}`)) || [];
       if (!brief.length && firstWord.length >= 3 && firstWord !== name) brief = (await getJSON(`cards?name=${encodeURIComponent(firstWord)}`)) || [];
+      if (!brief.length && firstWord.length >= 5) {
+        // Misread letters (e.g. "Charlzard"): search by the first few letters and keep close spellings.
+        const near = (await getJSON(`cards?name=${encodeURIComponent(firstWord.slice(0, 4))}`)) || [];
+        brief = near.filter((c) => similarity(firstWord, c.name.split(/\s+/)[0]) >= 0.7);
+      }
       if (num) {
         const withNum = brief.filter((c) => sameNumber(c.localId, num.number));
         if (withNum.length) brief = withNum;
