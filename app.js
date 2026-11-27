@@ -451,18 +451,25 @@
       }
       if (num) {
         const withNum = brief.filter((c) => sameNumber(c.localId, num.number));
-        if (withNum.length) brief = withNum;
-        else brief = []; // name was probably misread; fall back to the number
+        // Name and number agree: great. If not, the number was probably misread,
+        // so keep the name matches (the number lookup below adds its own).
+        if (withNum.length) { brief = withNum; num.confirmedByName = true; }
       }
     }
-    if (!brief.length && num) {
+    if (num && !num.confirmedByName) {
       // TCGdex number search matches "contains", so "54" also finds "054" and "154"; keep exact ones.
       const n = /^\d+$/.test(num.number) ? String(parseInt(num.number, 10)) : num.number;
-      brief = ((await getJSON(`cards?localId=${encodeURIComponent(n)}`)) || []).filter((c) => sameNumber(c.localId, num.number));
+      let byNum = ((await getJSON(`cards?localId=${encodeURIComponent(n)}`)) || []).filter((c) => sameNumber(c.localId, num.number));
+      if (num.total) {
+        const sets = await setsWithTotal(num.total).catch(() => new Set());
+        byNum = byNum.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
+      }
+      const seen = new Set(brief.map((c) => c.id));
+      brief = brief.concat(byNum.filter((c) => !seen.has(c.id)));
     }
     if (!brief.length) return [];
     // Keep only cards from sets whose printed size matches the "/91" part, when we have it.
-    if (num?.total) {
+    if (num?.total && num.confirmedByName) {
       const sets = await setsWithTotal(num.total);
       const inSet = brief.filter((c) => sets.has(c.id.slice(0, c.id.lastIndexOf('-'))));
       if (inSet.length) brief = inSet;
@@ -472,15 +479,15 @@
     const setOf = (c) => c.id.slice(0, c.id.lastIndexOf('-'));
     brief.forEach((c) => { c._s = (name ? similarity(name, c.name) : 0) + (order.get(setOf(c)) ?? 0) / 100000; });
     brief.sort((a, b) => b._s - a._s);
-    const top = brief.slice(0, num && !name ? 40 : 16);
+    const top = brief.slice(0, 24);
     const details = (await Promise.all(top.map((c) => getJSON(`cards/${encodeURIComponent(c.id)}`).catch(() => null))))
       .filter(Boolean).map(normalize);
     let list = details;
-    if (num?.total) {
-      const sameSet = list.filter((c) => Number(c.set.printedTotal) === num.total);
-      if (sameSet.length) list = sameSet;
-    }
-    list.forEach((c) => { c._score = (name ? similarity(name, c.name) : 0) + (num && sameNumber(c.number, num.number) ? 1 : 0); });
+    list.forEach((c) => {
+      c._score = (name ? 1.5 * similarity(name, c.name) : 0)
+        + (num && sameNumber(c.number, num.number) ? 1 : 0)
+        + (num?.total && Number(c.set.printedTotal) === num.total ? 0.5 : 0);
+    });
     list.sort((a, b) => b._score - a._score);
     return list.slice(0, 16);
   }
@@ -527,7 +534,7 @@
       els.readText.textContent = `Read: ${[name, num && (num.total ? `${num.number}/${num.total}` : num.number)].filter(Boolean).join(' · ')}`;
       setStatus('Looking it up…');
       const cards = await findCards({ name, num });
-      const sure = confidentMatch(cards, num);
+      const sure = confidentMatch(cards, num, name);
       if (sure && settings().autoAdd) await autoAdd(sure);
       else showResults(cards);
     } catch (e) {
@@ -540,12 +547,13 @@
 
   // A scan is "sure" when only one card fits, or the best one clearly beats the rest
   // and its number matched what was printed on the card.
-  function confidentMatch(cards, num) {
+  function confidentMatch(cards, num, name) {
     if (!cards.length || !num) return null;
     const [a, b] = cards;
     if (!sameNumber(a.number, num.number)) return null;
+    if (name && similarity(name, a.name) < 0.6) return null; // name and number disagree
     if (cards.length === 1) return a;
-    return a._score >= 1.75 && b._score < a._score - 0.25 ? a : null;
+    return a._score >= 2 && b._score < a._score - 0.3 ? a : null;
   }
 
   function defaultVariant(card) {
