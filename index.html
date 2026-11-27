@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Card Scanner">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <header class="topbar">
@@ -25,10 +25,10 @@
 
   <!-- SCAN -->
   <main id="tab-scan" class="tab active">
-    <section id="status" class="status hidden"></section>
     <section id="camera-step">
       <div class="camera-wrap">
         <video id="video" playsinline muted autoplay></video>
+        <div id="status" class="status hidden" role="status"></div>
         <div class="guide" id="guide"></div>
         <div id="camera-off" class="camera-off hidden">
           <p>Camera is off.</p>
@@ -154,6 +154,6 @@
 
   <canvas id="canvas" hidden></canvas>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

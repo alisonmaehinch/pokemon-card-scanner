@@ -52,11 +52,13 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => els.toast.classList.add('hidden'), action ? 7000 : 3200);
   }
-  function setStatus(msg, isErr = false) {
+  let statusTimer;
+  function setStatus(msg, isErr = false, hideAfterMs = 0) {
+    clearTimeout(statusTimer);
     if (!msg) { els.status.classList.add('hidden'); return; }
     els.status.textContent = msg;
     els.status.className = `status${isErr ? ' err' : ''}`;
-    els.status.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (hideAfterMs) statusTimer = setTimeout(() => els.status.classList.add('hidden'), hideAfterMs);
   }
   function showStep(step) {
     els.cameraStep.classList.toggle('hidden', step !== 'camera');
@@ -465,7 +467,7 @@
       const name = parseName(nameText);
       const num = parseNumber(numText);
       if (!name && !num) {
-        setStatus('I could not read that card. Try again with less glare, or type the name below.', true);
+        setStatus('I could not read that card. Try again with less glare, or type the name below.', true, 6000);
         return;
       }
       els.readText.textContent = `Read: ${[name, num && (num.total ? `${num.number}/${num.total}` : num.number)].filter(Boolean).join(' · ')}`;
@@ -505,7 +507,7 @@
     setStatus(`Adding ${card.name}…`);
     const msg = await saveRow(row);
     selected = null;
-    setStatus(`Added ${row.name} · ${row.set} ${row.number} · ${row.variant} · ${money(row.priceUSD)}`);
+    setStatus(`Added ${row.name} · ${row.set} ${row.number} · ${row.variant} · ${money(row.priceUSD)}`, false, 5000);
     toast(msg.text, msg.kind, { label: 'Undo', onClick: () => undoRow(row) });
   }
 
